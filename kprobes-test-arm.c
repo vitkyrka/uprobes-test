@@ -9,10 +9,56 @@
  */
 
 #include <linux/kernel.h>
+#ifdef KERNEL
 #include <linux/module.h>
+#else
+#include "userspace.h"
+#endif
 
 #include "kprobes-test.h"
 
+#undef TEST_UNSUPPORTED
+#define TEST_UNSUPPORTED(x)
+
+#if 0
+#ifndef KERNEL
+static uintptr_t __used kprobes_test_case_start(const char *title, void *stack)
+{
+	return 0;
+}
+
+static uintptr_t __used kprobes_test_case_end(void)
+{
+	return 0;
+}
+
+void __naked __kprobes_test_case_start(void)
+{
+	__asm__ __volatile__ (
+		"stmdb	sp!, {r4-r11}				\n\t"
+		"sub	sp, sp, #"__stringify(TEST_MEMORY_SIZE)"\n\t"
+		"bic	r0, lr, #1  @ r0 = inline title string	\n\t"
+		"mov	r1, sp					\n\t"
+		"bl	kprobes_test_case_start			\n\t"
+		"bx	r0					\n\t"
+	);
+}
+
+void __naked __kprobes_test_case_end_32(void)
+{
+	__asm__ __volatile__ (
+		"mov	r4, lr					\n\t"
+		"bl	kprobes_test_case_end			\n\t"
+		"cmp	r0, #0					\n\t"
+		"movne	pc, r0					\n\t"
+		"mov	r0, r4					\n\t"
+		"add	sp, sp, #"__stringify(TEST_MEMORY_SIZE)"\n\t"
+		"ldmia	sp!, {r4-r11}				\n\t"
+		"mov	pc, r0					\n\t"
+	);
+}
+#endif
+#endif
 
 #define TEST_ISA "32"
 
@@ -50,9 +96,10 @@
 
 void kprobe_arm_test_cases(void)
 {
-	kprobe_test_flags = 0;
+	// kprobe_test_flags = 0;
 
 	TEST_GROUP("Data-processing (register), (register-shifted register), (immediate)")
+	TEST("nop")
 
 #define _DATA_PROCESSING_DNM(op,s,val)						\
 	TEST_RR(  op "eq" s "	r0,  r",1, VAL1,", r",2, val, "")		\
@@ -187,9 +234,9 @@ void kprobe_arm_test_cases(void)
 	TEST_BF_R ("mov	pc, r",0,2f,"")
 	TEST_BF_RR("mov	pc, r",0,2f,", asl r",1,0,"")
 	TEST_BB(   "sub	pc, pc, #1b-2b+8")
-#if __LINUX_ARM_ARCH__ >= 6
-	TEST_BB(   "sub	pc, pc, #1b-2b+8-2") /* UNPREDICTABLE before ARMv6 */
-#endif
+// #if __LINUX_ARM_ARCH__ >= 6
+// 	TEST_BB(   "sub	pc, pc, #1b-2b+8-2") /* UNPREDICTABLE before and after ARMv6 */
+// #endif
 	TEST_BB_R( "sub	pc, pc, r",14, 1f-2f+8,"")
 	TEST_BB_R( "rsb	pc, r",14,1f-2f+8,", pc")
 	TEST_RR(   "add	pc, pc, r",10,-2,", asl r",11,1,"")

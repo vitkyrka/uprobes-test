@@ -198,6 +198,7 @@
  */
 
 #include <linux/kernel.h>
+#ifdef KERNEL
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/kprobes.h>
@@ -205,22 +206,30 @@
 #include <asm/opcodes.h>
 
 #include "kprobes.h"
+#endif
+#ifndef KERNEL
+#include "userspace.h"
+#endif
 #include "kprobes-test.h"
 
 
-#define BENCHMARKING	1
+#define BENCHMARKING	0
+#define SANITY		0
 
 
 /*
  * Test basic API
  */
 
+#ifdef KERNEL
 static bool test_regs_ok;
 static int test_func_instance;
 static int pre_handler_called;
 static int post_handler_called;
+#ifdef KERNEL
 static int jprobe_func_called;
 static int kretprobe_handler_called;
+#endif
 
 #define FUNC_ARG1 0x12345678
 #define FUNC_ARG2 0xabcdef
@@ -445,7 +454,9 @@ static int test_kretprobe(long (*func)(long, long))
 
 	return 0;
 }
+#endif
 
+#ifdef KERNEL
 static int run_api_tests(long (*func)(long, long))
 {
 	int ret;
@@ -467,7 +478,7 @@ static int run_api_tests(long (*func)(long, long))
 
 	return 0;
 }
-
+#endif
 
 /*
  * Benchmarking
@@ -619,6 +630,7 @@ static int run_benchmarks(void)
 
 #endif /* BENCHMARKING */
 
+#if SANITY
 
 /*
  * Decoding table self-consistency tests
@@ -705,6 +717,7 @@ static int table_test(const union decode_item *table)
 	return table_iter(args.root_table, table_test_fn, &args);
 }
 
+#endif
 
 /*
  * Decoding table test coverage analysis
@@ -723,6 +736,7 @@ static int table_test(const union decode_item *table)
  * the kprobes decoding tables have had a test case executed for them.
  */
 
+#ifdef COVERAGE
 bool coverage_fail;
 
 #define MAX_COVERAGE_ENTRIES 256
@@ -948,7 +962,7 @@ static void coverage_end(void)
 
 	kfree(coverage.base);
 }
-
+#endif
 
 /*
  * Framework for instruction set test cases
@@ -1197,11 +1211,17 @@ struct test_probe {
 	struct kprobe	kprobe;
 	bool		registered;
 	int		hit;
+	bool		testcase;
 };
 
 static void unregister_test_probe(struct test_probe *probe)
 {
 	if (probe->registered) {
+#ifndef KERNEL
+	if (probe->testcase) {
+		unregister_uprobe(&probe->kprobe);
+	} else
+#endif
 		unregister_kprobe(&probe->kprobe);
 		probe->kprobe.flags = 0; /* Clear disable flag to allow reuse */
 	}
@@ -1214,6 +1234,17 @@ static int register_test_probe(struct test_probe *probe)
 
 	if (probe->registered)
 		BUG();
+
+#ifndef KERNEL
+	if (probe->testcase) {
+		ret = register_uprobe(&probe->kprobe);
+		if (ret >= 0) {
+			probe->registered = true;
+			probe->hit = -1;
+		}
+		return ret;
+	}
+#endif
 
 	ret = register_kprobe(&probe->kprobe);
 	if (ret >= 0) {
@@ -1269,7 +1300,9 @@ static struct test_probe test_before_probe = {
 
 static struct test_probe test_case_probe = {
 	.kprobe.pre_handler	= test_case_pre_handler,
+	.testcase = true,
 };
+
 
 static struct test_probe test_after_probe = {
 	.kprobe.pre_handler	= test_after_pre_handler,
@@ -1373,12 +1406,14 @@ static uintptr_t __used kprobes_test_case_start(const char *title, void *stack)
 	test_case_probe.kprobe.addr = (kprobe_opcode_t *)test_code;
 
 	if (test_case_is_thumb) {
+#ifdef CONFIG_THUMB2_KERNEL
 		u16 *p = (u16 *)(test_code & ~1);
 		current_instruction = p[0];
 		if (is_wide_instruction(current_instruction)) {
 			current_instruction <<= 16;
 			current_instruction |= p[1];
 		}
+#endif
 	} else {
 		current_instruction = *(u32 *)test_code;
 	}
@@ -1393,6 +1428,7 @@ static uintptr_t __used kprobes_test_case_start(const char *title, void *stack)
 	test_code = next_instruction(test_code);
 	test_after_probe.kprobe.addr = (kprobe_opcode_t *)test_code;
 
+#ifdef CONFIG_THUMB2_KERNEL
 	if (kprobe_test_flags & TEST_FLAG_NARROW_INSTR) {
 		if (!test_case_is_thumb ||
 			is_wide_instruction(current_instruction)) {
@@ -1406,8 +1442,11 @@ static uintptr_t __used kprobes_test_case_start(const char *title, void *stack)
 				goto fail;
 		}
 	}
+#endif
 
+#if COVERAGE
 	coverage_add(current_instruction);
+#endif
 
 	if (end_arg->flags & ARG_FLAG_UNSUPPORTED) {
 		if (register_test_probe(&test_case_probe) < 0)
@@ -1452,12 +1491,32 @@ fail:
 	return (uintptr_t)test_after_probe.kprobe.addr;
 }
 
+static void hexdump(void *buf, int size)
+{
+	char *p = buf;
+	int i;
+
+	for (i = 0; i < size; i++) {
+		printf("%02x ", *p);
+		p++;
+
+		if ((i % 15) == 0)
+			putchar('\n');
+	}
+
+	putchar('\n');
+}
+
 static bool check_test_results(void)
 {
 	size_t mem_size = 0;
 	u32 *mem = 0;
 
 	if (memcmp(&expected_regs, &result_regs, sizeof(expected_regs))) {
+		printf("expected\n");
+		hexdump(&expected_regs, sizeof(expected_regs));
+		printf("result\n");
+		hexdump(&result_regs, sizeof(result_regs));
 		test_case_failed("registers differ");
 		goto fail;
 	}
@@ -1489,11 +1548,16 @@ fail:
 		print_memory(mem, mem_size);
 	}
 
+	exit(0);
+
 	return false;
 }
 
 static uintptr_t __used kprobes_test_case_end(void)
 {
+	extern void trace_process(void);
+	trace_process();
+
 	if (test_case_run_count < 0) {
 		if (test_case_run_count == TEST_CASE_PASSED)
 			/* kprobes_test_case_start did all the needed testing */
@@ -1573,30 +1637,37 @@ end:
  * Top level test functions
  */
 
+#ifdef KERNEL
 static int run_test_cases(void (*tests)(void), const union decode_item *table)
 {
-	int ret;
+	int ret = 0;
 
+#if SANITY
 	pr_info("    Check decoding tables\n");
 	ret = table_test(table);
 	if (ret)
 		return ret;
+#endif
 
+#if COVERAGE
 	pr_info("    Run test cases\n");
 	ret = coverage_start(table);
 	if (ret)
 		return ret;
+#endif
 
 	tests();
 
+#if COVERAGE
 	coverage_end();
-	return 0;
+#endif
+	return ret;
 }
 
 
 static int __init run_all_tests(void)
 {
-	int ret = 0;
+	int ret;
 
 	pr_info("Begining kprobe tests...\n");
 
@@ -1656,6 +1727,7 @@ static int __init run_all_tests(void)
 		goto out;
 #endif
 
+#if COVERAGE
 #if __LINUX_ARM_ARCH__ >= 7
 	/* We are able to run all test cases so coverage should be complete */
 	if (coverage_fail) {
@@ -1664,6 +1736,7 @@ static int __init run_all_tests(void)
 		goto out;
 	}
 #endif
+#endif
 
 out:
 	if (ret == 0)
@@ -1671,9 +1744,9 @@ out:
 	else
 		pr_err("kprobe tests failed\n");
 
-	return ret;
+	return 0;
 }
-
+#endif
 
 /*
  * Module setup
