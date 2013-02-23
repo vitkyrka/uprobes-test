@@ -1,0 +1,12 @@
+ARM UPROBES TEST CODE
+
+This is an implementation of a userspace harness for the ARM kernel kprobes
+test code in order to allow it to be used for testing of uprobes.
+
+The setting of the uprobe on the instruction under test and the checking of
+the uprobe hit are done via the tracing files in debugfs.
+
+The probes before and after the instruction point used by the kprobes test code
+to prepare registers and verify their state after execution of the probed
+instruction are implemented by inserting undefined instructions and handling
+SIGILL in userspace.
